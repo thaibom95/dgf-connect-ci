@@ -1,0 +1,160 @@
+# ============================================================
+# DGF Connect — GitHub Actions CI/CD
+#
+# File này thuộc GitHub public repo (dgf-connect-ci).
+# KHÔNG commit file này lên GitLab repo (source code).
+#
+# Trigger: deploy.sh gọi GitHub API → workflow_dispatch
+# Source code được clone từ GitLab trong runtime (không public)
+# ============================================================
+
+name: Build & Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      flavor:
+        description: "Flavor (dev / prod)"
+        required: true
+        type: choice
+        options: [dev, prod]
+      version:
+        description: "Version name (e.g. 1.0.1)"
+        required: true
+        type: string
+      build_number:
+        description: "Build number (e.g. 5)"
+        required: true
+        type: string
+      tag:
+        description: "Git tag (e.g. v1.0.1+5-dev)"
+        required: true
+        type: string
+
+env:
+  FLUTTER_VERSION: "3.29.0"
+  JAVA_VERSION: "17"
+
+# ============================================================
+# Job 1: Android — ubuntu-latest (nhanh & rẻ hơn macOS)
+# ============================================================
+jobs:
+  deploy-android:
+    name: "Android (${{ inputs.flavor }})"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v4
+
+      - name: Clone source từ GitLab
+        run: |
+          git clone \
+            "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
+            source
+          cd source && git checkout "${{ inputs.tag }}"
+
+      - name: Setup Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Ruby & Fastlane
+        uses: ruby/setup-ruby@v1
+        with:
+          working-directory: source
+          bundler-cache: true
+
+      - name: Flutter pub get
+        working-directory: source
+        run: flutter pub get
+
+      - name: Generate code (build_runner)
+        working-directory: source
+        run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Fastlane — Deploy Android (${{ inputs.flavor }})
+        working-directory: source
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          FLUTTER_CMD: flutter
+          # Android signing
+          ANDROID_KEYSTORE_BASE64:         ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD:       ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS:               ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD:            ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # Firebase App Distribution
+          FIREBASE_APP_ID_DEV:             ${{ secrets.FIREBASE_APP_ID_DEV }}
+          FIREBASE_APP_ID_PROD:            ${{ secrets.FIREBASE_APP_ID_PROD }}
+          FIREBASE_SERVICE_ACCOUNT_JSON:   ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          # Google Play
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: bundle exec fastlane android deploy_${{ inputs.flavor }}
+
+# ============================================================
+# Job 2: iOS — macos-latest
+# ============================================================
+  deploy-ios:
+    name: "iOS (${{ inputs.flavor }})"
+    runs-on: macos-latest
+    steps:
+      - name: Checkout CI repo
+        uses: actions/checkout@v4
+
+      - name: Clone source từ GitLab
+        run: |
+          git clone \
+            "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
+            source
+          cd source && git checkout "${{ inputs.tag }}"
+
+      - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Ruby & Fastlane
+        uses: ruby/setup-ruby@v1
+        with:
+          working-directory: source
+          bundler-cache: true
+
+      - name: Flutter pub get
+        working-directory: source
+        run: flutter pub get
+
+      - name: Generate code (build_runner)
+        working-directory: source
+        run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Install CocoaPods dependencies
+        working-directory: source/ios
+        run: pod install --repo-update
+
+      - name: Fastlane — Deploy iOS (${{ inputs.flavor }})
+        working-directory: source
+        env:
+          BUILD_VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          FLUTTER_CMD: flutter
+          # iOS signing — .p12 certificate (base64)
+          IOS_P12_BASE64:            ${{ secrets.IOS_P12_BASE64 }}
+          IOS_P12_PASSWORD:          ${{ secrets.IOS_P12_PASSWORD }}
+          # Provisioning profiles (base64)
+          IOS_PROVISION_DEV_BASE64:  ${{ secrets.IOS_PROVISION_DEV_BASE64 }}
+          IOS_PROVISION_PROD_BASE64: ${{ secrets.IOS_PROVISION_PROD_BASE64 }}
+          # App Store Connect API
+          APP_STORE_API_KEY_P8_DEV:  ${{ secrets.APP_STORE_API_KEY_P8_DEV }}
+          APP_STORE_API_KEY_P8_PROD: ${{ secrets.APP_STORE_API_KEY_P8_PROD }}
+          APP_STORE_ISSUER_ID:       ${{ secrets.APP_STORE_ISSUER_ID }}
+        run: bundle exec fastlane ios deploy_${{ inputs.flavor }}
