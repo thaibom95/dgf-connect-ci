@@ -108,6 +108,7 @@ jobs:
       - name: Setup Ruby & Fastlane
         uses: ruby/setup-ruby@v1
         with:
+          ruby-version: "3.2"
           working-directory: source
           bundler-cache: true
 
@@ -183,6 +184,7 @@ jobs:
       - name: Setup Ruby & Fastlane
         uses: ruby/setup-ruby@v1
         with:
+          ruby-version: "3.2"
           working-directory: source
           bundler-cache: true
 
