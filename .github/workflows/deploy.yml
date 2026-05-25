@@ -4,8 +4,10 @@
 # File này thuộc GitHub public repo (dgf-connect-ci).
 # KHÔNG commit file này lên GitLab repo (source code).
 #
-# Trigger: deploy.sh gọi GitHub API → workflow_dispatch
-# Source code được clone từ GitLab trong runtime (không public)
+# 3 cách trigger:
+#   1. deploy.sh (local)        — tự động điền đủ inputs
+#   2. GitLab CI (.gitlab-ci.yml) — tự động điền đủ inputs
+#   3. GitHub UI (thủ công)     — chỉ cần nhập tag, còn lại tự parse
 # ============================================================
 
 name: Build & Deploy
@@ -13,38 +15,75 @@ name: Build & Deploy
 on:
   workflow_dispatch:
     inputs:
-      flavor:
-        description: "Flavor (dev / prod)"
-        required: true
-        type: choice
-        options: [dev, prod]
-      version:
-        description: "Version name (e.g. 1.0.1)"
-        required: true
-        type: string
-      build_number:
-        description: "Build number (e.g. 5)"
-        required: true
-        type: string
       tag:
-        description: "Git tag (e.g. v1.0.1+5-dev)"
+        description: "Git tag trên GitLab (bắt buộc) — VD: v1.0.1+5-dev"
         required: true
         type: string
+      flavor:
+        description: "Flavor — để trống sẽ tự parse từ tag"
+        required: false
+        type: choice
+        options: ["", dev, prod]
+        default: ""
+      version:
+        description: "Version name — để trống sẽ tự parse từ tag"
+        required: false
+        type: string
+        default: ""
+      build_number:
+        description: "Build number — để trống sẽ tự parse từ tag"
+        required: false
+        type: string
+        default: ""
 
 env:
   FLUTTER_VERSION: "3.29.0"
   JAVA_VERSION: "17"
 
-# ============================================================
-# Job 1: Android — ubuntu-latest (nhanh & rẻ hơn macOS)
-# ============================================================
+# ── Parse tag thành flavor / version / build_number ─────────────
+# Tag format: v{version}+{build_number}-{flavor}
+# Ví dụ: v1.0.1+5-dev  →  flavor=dev, version=1.0.1, build_number=5
+
 jobs:
+# ============================================================
+# Job 1: Android — ubuntu-latest
+# ============================================================
   deploy-android:
-    name: "Android (${{ inputs.flavor }})"
+    name: "Android"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
+
+      - name: Parse inputs từ tag
+        id: params
+        run: |
+          TAG="${{ inputs.tag }}"
+          # Parse flavor từ tag nếu input trống
+          if [ -z "${{ inputs.flavor }}" ]; then
+            FLAVOR="${TAG##*-}"
+          else
+            FLAVOR="${{ inputs.flavor }}"
+          fi
+          # Parse version và build_number từ tag nếu input trống
+          if [ -z "${{ inputs.version }}" ]; then
+            # TAG dạng: v1.0.1+5-dev → strip "v" và "-dev" → 1.0.1+5
+            MIDDLE=$(echo "$TAG" | sed 's/^v//' | sed "s/-${FLAVOR}$//")
+            VERSION=$(echo "$MIDDLE" | cut -d'+' -f1)
+            BUILD_NUMBER=$(echo "$MIDDLE" | cut -d'+' -f2)
+          else
+            VERSION="${{ inputs.version }}"
+            BUILD_NUMBER="${{ inputs.build_number }}"
+          fi
+          echo "flavor=$FLAVOR"         >> $GITHUB_OUTPUT
+          echo "version=$VERSION"       >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "──────────────────────────────────"
+          echo "  Tag          : $TAG"
+          echo "  Flavor       : $FLAVOR"
+          echo "  Version      : $VERSION"
+          echo "  Build number : $BUILD_NUMBER"
+          echo "──────────────────────────────────"
 
       - name: Clone source từ GitLab
         run: |
@@ -80,34 +119,52 @@ jobs:
         working-directory: source
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
-      - name: Fastlane — Deploy Android (${{ inputs.flavor }})
+      - name: Fastlane — Deploy Android (${{ steps.params.outputs.flavor }})
         working-directory: source
         env:
-          BUILD_VERSION: ${{ inputs.version }}
-          BUILD_NUMBER: ${{ inputs.build_number }}
+          BUILD_VERSION: ${{ steps.params.outputs.version }}
+          BUILD_NUMBER:  ${{ steps.params.outputs.build_number }}
           FLUTTER_CMD: flutter
-          # Android signing
-          ANDROID_KEYSTORE_BASE64:         ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD:       ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS:               ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD:            ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # Firebase App Distribution
-          FIREBASE_APP_ID_DEV:             ${{ secrets.FIREBASE_APP_ID_DEV }}
-          FIREBASE_APP_ID_PROD:            ${{ secrets.FIREBASE_APP_ID_PROD }}
-          FIREBASE_SERVICE_ACCOUNT_JSON:   ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
-          # Google Play
+          ANDROID_KEYSTORE_BASE64:          ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD:        ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS:                ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD:             ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FIREBASE_APP_ID_DEV:              ${{ secrets.FIREBASE_APP_ID_DEV }}
+          FIREBASE_APP_ID_PROD:             ${{ secrets.FIREBASE_APP_ID_PROD }}
+          FIREBASE_SERVICE_ACCOUNT_JSON:    ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
-        run: bundle exec fastlane android deploy_${{ inputs.flavor }}
+        run: bundle exec fastlane android deploy_${{ steps.params.outputs.flavor }}
 
 # ============================================================
 # Job 2: iOS — macos-latest
 # ============================================================
   deploy-ios:
-    name: "iOS (${{ inputs.flavor }})"
+    name: "iOS"
     runs-on: macos-latest
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
+
+      - name: Parse inputs từ tag
+        id: params
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "${{ inputs.flavor }}" ]; then
+            FLAVOR="${TAG##*-}"
+          else
+            FLAVOR="${{ inputs.flavor }}"
+          fi
+          if [ -z "${{ inputs.version }}" ]; then
+            MIDDLE=$(echo "$TAG" | sed 's/^v//' | sed "s/-${FLAVOR}$//")
+            VERSION=$(echo "$MIDDLE" | cut -d'+' -f1)
+            BUILD_NUMBER=$(echo "$MIDDLE" | cut -d'+' -f2)
+          else
+            VERSION="${{ inputs.version }}"
+            BUILD_NUMBER="${{ inputs.build_number }}"
+          fi
+          echo "flavor=$FLAVOR"             >> $GITHUB_OUTPUT
+          echo "version=$VERSION"           >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
       - name: Clone source từ GitLab
         run: |
@@ -141,20 +198,17 @@ jobs:
         working-directory: source/ios
         run: pod install --repo-update
 
-      - name: Fastlane — Deploy iOS (${{ inputs.flavor }})
+      - name: Fastlane — Deploy iOS (${{ steps.params.outputs.flavor }})
         working-directory: source
         env:
-          BUILD_VERSION: ${{ inputs.version }}
-          BUILD_NUMBER: ${{ inputs.build_number }}
+          BUILD_VERSION: ${{ steps.params.outputs.version }}
+          BUILD_NUMBER:  ${{ steps.params.outputs.build_number }}
           FLUTTER_CMD: flutter
-          # iOS signing — .p12 certificate (base64)
           IOS_P12_BASE64:            ${{ secrets.IOS_P12_BASE64 }}
           IOS_P12_PASSWORD:          ${{ secrets.IOS_P12_PASSWORD }}
-          # Provisioning profiles (base64)
           IOS_PROVISION_DEV_BASE64:  ${{ secrets.IOS_PROVISION_DEV_BASE64 }}
           IOS_PROVISION_PROD_BASE64: ${{ secrets.IOS_PROVISION_PROD_BASE64 }}
-          # App Store Connect API
           APP_STORE_API_KEY_P8_DEV:  ${{ secrets.APP_STORE_API_KEY_P8_DEV }}
           APP_STORE_API_KEY_P8_PROD: ${{ secrets.APP_STORE_API_KEY_P8_PROD }}
           APP_STORE_ISSUER_ID:       ${{ secrets.APP_STORE_ISSUER_ID }}
-        run: bundle exec fastlane ios deploy_${{ inputs.flavor }}
+        run: bundle exec fastlane ios deploy_${{ steps.params.outputs.flavor }}
