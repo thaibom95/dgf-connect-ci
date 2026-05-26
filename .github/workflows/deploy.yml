@@ -35,6 +35,12 @@ on:
         required: false
         type: string
         default: ""
+      platform:
+        description: "Platform cần build (default: ios)"
+        required: false
+        type: choice
+        options: [ios, android, both]
+        default: "ios"
 
 env:
   FLUTTER_VERSION: "3.29.0"
@@ -51,6 +57,7 @@ jobs:
   deploy-android:
     name: "Android"
     runs-on: ubuntu-latest
+    if: inputs.platform == 'android' || inputs.platform == 'both'
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
@@ -88,7 +95,7 @@ jobs:
       - name: Clone source từ GitLab
         run: |
           git clone \
-            "https://oauth2:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
+            "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
             source
           cd source && git checkout "${{ inputs.tag }}"
 
@@ -108,7 +115,7 @@ jobs:
       - name: Setup Ruby & Fastlane
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.2"
+          ruby-version: '3.3'
           working-directory: source
           bundler-cache: true
 
@@ -130,18 +137,16 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD:        ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS:                ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD:             ${{ secrets.ANDROID_KEY_PASSWORD }}
-          FIREBASE_APP_ID_DEV:              ${{ secrets.FIREBASE_APP_ID_DEV }}
-          FIREBASE_APP_ID_PROD:             ${{ secrets.FIREBASE_APP_ID_PROD }}
-          FIREBASE_SERVICE_ACCOUNT_JSON:    ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: bundle exec fastlane android deploy_${{ steps.params.outputs.flavor }}
 
 # ============================================================
-# Job 2: iOS — macos-latest
+# Job 2: iOS — macos-26
 # ============================================================
   deploy-ios:
     name: "iOS"
-    runs-on: macos-latest
+    runs-on: macos-26
+    if: inputs.platform != 'android'
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
@@ -170,7 +175,7 @@ jobs:
       - name: Clone source từ GitLab
         run: |
           git clone \
-            "https://oauth2:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
+            "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
             source
           cd source && git checkout "${{ inputs.tag }}"
 
@@ -184,7 +189,7 @@ jobs:
       - name: Setup Ruby & Fastlane
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.2"
+          ruby-version: '3.3'
           working-directory: source
           bundler-cache: true
 
@@ -198,19 +203,57 @@ jobs:
 
       - name: Install CocoaPods dependencies
         working-directory: source/ios
-        run: pod install --repo-update
+        run: bundle exec pod install --repo-update
 
-      - name: Fastlane — Deploy iOS (${{ steps.params.outputs.flavor }})
+      - name: Setup iOS signing (${{ steps.params.outputs.flavor }})
+        working-directory: source
+        run: bundle exec fastlane ios prepare_${{ steps.params.outputs.flavor }}
+
+      - name: Switch Xcode version
+        run: |
+          sudo xcode-select --switch /Applications/Xcode_26.4.1.app
+          echo "=== Xcode sau khi switch ==="
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Build IPA archive (${{ steps.params.outputs.flavor }})
         working-directory: source
         env:
-          BUILD_VERSION: ${{ steps.params.outputs.version }}
-          BUILD_NUMBER:  ${{ steps.params.outputs.build_number }}
-          FLUTTER_CMD: flutter
-          IOS_P12_BASE64:            ${{ secrets.IOS_P12_BASE64 }}
-          IOS_P12_PASSWORD:          ${{ secrets.IOS_P12_PASSWORD }}
-          IOS_PROVISION_DEV_BASE64:  ${{ secrets.IOS_PROVISION_DEV_BASE64 }}
-          IOS_PROVISION_PROD_BASE64: ${{ secrets.IOS_PROVISION_PROD_BASE64 }}
-          APP_STORE_API_KEY_P8_DEV:  ${{ secrets.APP_STORE_API_KEY_P8_DEV }}
-          APP_STORE_API_KEY_P8_PROD: ${{ secrets.APP_STORE_API_KEY_P8_PROD }}
-          APP_STORE_ISSUER_ID:       ${{ secrets.APP_STORE_ISSUER_ID }}
+          DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+        run: |
+          flutter build ipa \
+            --flavor ${{ steps.params.outputs.flavor }} \
+            --dart-define=FLAVOR=${{ steps.params.outputs.flavor }} \
+            --release \
+            --build-name=${{ steps.params.outputs.version }} \
+            --build-number=${{ steps.params.outputs.build_number }}
+          echo "──────── build/ios/ structure ────────"
+          find build/ios -maxdepth 4 | sort
+          echo "──────────────────────────────────────"
+
+      - name: Export IPA (${{ steps.params.outputs.flavor }})
+        working-directory: source
+        env:
+          DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+        run: |
+          ARCHIVE=$(find build/ios/archive -name "*.xcarchive" | head -1)
+          if [ -z "$ARCHIVE" ]; then
+            echo "ERROR: no .xcarchive found in build/ios/archive"
+            find build/ios -name "*.xcarchive" 2>/dev/null || echo "none anywhere"
+            exit 1
+          fi
+          echo "Archive: $ARCHIVE"
+          mkdir -p build/ios/ipa
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath build/ios/ipa \
+            -exportOptionsPlist ios/ExportOptions_${{ steps.params.outputs.flavor }}.plist
+          echo "──────── build/ios/ipa/ contents ─────"
+          find build/ios/ipa | sort
+          echo "──────────────────────────────────────"
+
+      - name: Upload to TestFlight (${{ steps.params.outputs.flavor }})
+        working-directory: source
+        env:
+          APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_ISSUER_ID }}
         run: bundle exec fastlane ios deploy_${{ steps.params.outputs.flavor }}
