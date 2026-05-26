@@ -36,11 +36,11 @@ on:
         type: string
         default: ""
       platform:
-        description: "Platform cần build (default: ios)"
+        description: "Platform cần build (default: both)"
         required: false
         type: choice
         options: [ios, android, both]
-        default: "ios"
+        default: "both"
 
 env:
   FLUTTER_VERSION: "3.29.0"
