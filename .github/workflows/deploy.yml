@@ -45,6 +45,7 @@ on:
 env:
   FLUTTER_VERSION: "3.29.0"
   JAVA_VERSION: "17"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # ── Parse tag thành flavor / version / build_number ─────────────
 # Tag format: v{version}+{build_number}-{flavor}
