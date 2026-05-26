@@ -4,52 +4,28 @@
 # File này thuộc GitHub public repo (dgf-connect-ci).
 # KHÔNG commit file này lên GitLab repo (source code).
 #
-# 3 cách trigger:
-#   1. deploy.sh (local)        — tự động điền đủ inputs
+# 2 cách trigger (không có GitHub UI — repo public):
+#   1. deploy.sh (local)          — tự động điền đủ inputs
 #   2. GitLab CI (.gitlab-ci.yml) — tự động điền đủ inputs
-#   3. GitHub UI (thủ công)     — chỉ cần nhập tag, còn lại tự parse
 # ============================================================
 
 name: Build & Deploy
 
 on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Git tag trên GitLab (bắt buộc) — VD: v1.0.1+5-dev"
-        required: true
-        type: string
-      flavor:
-        description: "Flavor — để trống sẽ tự parse từ tag"
-        required: false
-        type: choice
-        options: ["", dev, prod]
-        default: ""
-      version:
-        description: "Version name — để trống sẽ tự parse từ tag"
-        required: false
-        type: string
-        default: ""
-      build_number:
-        description: "Build number — để trống sẽ tự parse từ tag"
-        required: false
-        type: string
-        default: ""
-      platform:
-        description: "Platform cần build (default: both)"
-        required: false
-        type: choice
-        options: [ios, android, both]
-        default: "both"
+  repository_dispatch:
+    types: [deploy]
 
 env:
   FLUTTER_VERSION: "3.29.0"
   JAVA_VERSION: "17"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-# ── Parse tag thành flavor / version / build_number ─────────────
-# Tag format: v{version}+{build_number}-{flavor}
-# Ví dụ: v1.0.1+5-dev  →  flavor=dev, version=1.0.1, build_number=5
+# ── Payload từ GitLab CI ─────────────────────────────────────
+# github.event.client_payload.tag
+# github.event.client_payload.flavor
+# github.event.client_payload.version
+# github.event.client_payload.build_number
+# github.event.client_payload.platform  (ios | android | both)
 
 jobs:
 # ============================================================
@@ -58,7 +34,7 @@ jobs:
   deploy-android:
     name: "Android"
     runs-on: ubuntu-latest
-    if: inputs.platform == 'android' || inputs.platform == 'both'
+    if: github.event.client_payload.platform == 'android' || github.event.client_payload.platform == 'both'
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
@@ -66,39 +42,30 @@ jobs:
       - name: Parse inputs từ tag
         id: params
         run: |
-          TAG="${{ inputs.tag }}"
-          # Parse flavor từ tag nếu input trống
-          if [ -z "${{ inputs.flavor }}" ]; then
+          TAG="${{ github.event.client_payload.tag }}"
+          if [ -z "${{ github.event.client_payload.flavor }}" ]; then
             FLAVOR="${TAG##*-}"
           else
-            FLAVOR="${{ inputs.flavor }}"
+            FLAVOR="${{ github.event.client_payload.flavor }}"
           fi
-          # Parse version và build_number từ tag nếu input trống
-          if [ -z "${{ inputs.version }}" ]; then
-            # TAG dạng: v1.0.1+5-dev → strip "v" và "-dev" → 1.0.1+5
+          if [ -z "${{ github.event.client_payload.version }}" ]; then
             MIDDLE=$(echo "$TAG" | sed 's/^v//' | sed "s/-${FLAVOR}$//")
             VERSION=$(echo "$MIDDLE" | cut -d'+' -f1)
             BUILD_NUMBER=$(echo "$MIDDLE" | cut -d'+' -f2)
           else
-            VERSION="${{ inputs.version }}"
-            BUILD_NUMBER="${{ inputs.build_number }}"
+            VERSION="${{ github.event.client_payload.version }}"
+            BUILD_NUMBER="${{ github.event.client_payload.build_number }}"
           fi
-          echo "flavor=$FLAVOR"         >> $GITHUB_OUTPUT
-          echo "version=$VERSION"       >> $GITHUB_OUTPUT
+          echo "flavor=$FLAVOR"             >> $GITHUB_OUTPUT
+          echo "version=$VERSION"           >> $GITHUB_OUTPUT
           echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
-          echo "──────────────────────────────────"
-          echo "  Tag          : $TAG"
-          echo "  Flavor       : $FLAVOR"
-          echo "  Version      : $VERSION"
-          echo "  Build number : $BUILD_NUMBER"
-          echo "──────────────────────────────────"
 
       - name: Clone source từ GitLab
         run: |
           git clone \
             "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
             source
-          cd source && git checkout "${{ inputs.tag }}"
+          cd source && git checkout "${{ github.event.client_payload.tag }}"
 
       - name: Setup Java ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
@@ -147,7 +114,7 @@ jobs:
   deploy-ios:
     name: "iOS"
     runs-on: macos-26
-    if: inputs.platform != 'android'
+    if: github.event.client_payload.platform != 'android'
     steps:
       - name: Checkout CI repo
         uses: actions/checkout@v4
@@ -155,19 +122,19 @@ jobs:
       - name: Parse inputs từ tag
         id: params
         run: |
-          TAG="${{ inputs.tag }}"
-          if [ -z "${{ inputs.flavor }}" ]; then
+          TAG="${{ github.event.client_payload.tag }}"
+          if [ -z "${{ github.event.client_payload.flavor }}" ]; then
             FLAVOR="${TAG##*-}"
           else
-            FLAVOR="${{ inputs.flavor }}"
+            FLAVOR="${{ github.event.client_payload.flavor }}"
           fi
-          if [ -z "${{ inputs.version }}" ]; then
+          if [ -z "${{ github.event.client_payload.version }}" ]; then
             MIDDLE=$(echo "$TAG" | sed 's/^v//' | sed "s/-${FLAVOR}$//")
             VERSION=$(echo "$MIDDLE" | cut -d'+' -f1)
             BUILD_NUMBER=$(echo "$MIDDLE" | cut -d'+' -f2)
           else
-            VERSION="${{ inputs.version }}"
-            BUILD_NUMBER="${{ inputs.build_number }}"
+            VERSION="${{ github.event.client_payload.version }}"
+            BUILD_NUMBER="${{ github.event.client_payload.build_number }}"
           fi
           echo "flavor=$FLAVOR"             >> $GITHUB_OUTPUT
           echo "version=$VERSION"           >> $GITHUB_OUTPUT
@@ -178,7 +145,7 @@ jobs:
           git clone \
             "https://gitlab-ci-token:${{ secrets.GITLAB_DEPLOY_TOKEN }}@gitlab.com/${{ secrets.GITLAB_REPO_PATH }}.git" \
             source
-          cd source && git checkout "${{ inputs.tag }}"
+          cd source && git checkout "${{ github.event.client_payload.tag }}"
 
       - name: Setup Flutter ${{ env.FLUTTER_VERSION }}
         uses: subosito/flutter-action@v2
